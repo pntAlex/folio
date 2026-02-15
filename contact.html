@@ -90,6 +90,50 @@
                 ]
             }
         </script>
+        <script>
+          window.CAP_CUSTOM_WASM_URL = "__CAPTCHA_INSTANCE_URL__/assets/cap_wasm.js";
+        </script>
+        <script src="__CAPTCHA_INSTANCE_URL__/assets/widget.js"></script>
+        <script>
+            const installCapWidgetGuard = () => {
+                const CapWidget = customElements.get("cap-widget");
+                if (!CapWidget || CapWidget.__folioConnectedPatched === true) {
+                    return Boolean(CapWidget);
+                }
+
+                const prototype = CapWidget.prototype;
+                const originalConnectedCallback = prototype.connectedCallback;
+                if (typeof originalConnectedCallback !== "function") {
+                    return true;
+                }
+
+                prototype.connectedCallback = function (...args) {
+                    if (this.shadowRoot) {
+                        const fieldName =
+                            this.getAttribute("data-cap-hidden-field-name") ||
+                            "cap-token";
+                        if (!this.querySelector(`input[name="${fieldName}"]`)) {
+                            this.insertAdjacentHTML(
+                                "beforeend",
+                                `<input type="hidden" name="${fieldName}" value="">`,
+                            );
+                        }
+                        return;
+                    }
+
+                    return originalConnectedCallback.apply(this, args);
+                };
+
+                CapWidget.__folioConnectedPatched = true;
+                return true;
+            };
+
+            if (!installCapWidgetGuard()) {
+                customElements
+                    .whenDefined("cap-widget")
+                    .then(installCapWidgetGuard);
+            }
+        </script>
     </head>
 
     <body class="smooth-scroll" data-primary-color="#171717">
@@ -315,7 +359,6 @@
                                         <!-- Contact Formular -->
                                         <div id="contact-formular">
                                             <div id="message"></div>
-
                                             <form
                                                 method="post"
                                                 name="contactform"
@@ -371,27 +414,14 @@
                                                     class="verify-box has-animation"
                                                     data-delay="100"
                                                 >
-                                                    <ul class="verify-sum">
-                                                        <li>1</li>
-                                                        <li>+</li>
-                                                        <li>3</li>
-                                                        <li>=</li>
-                                                    </ul>
-                                                    <input
-                                                        name="verify"
-                                                        type="text"
-                                                        id="verify"
-                                                        size="4"
-                                                        value=""
-                                                    />
-                                                    <label
-                                                        for="verify"
-                                                        class="required"
-                                                    >
-                                                        <span>*</span>
-                                                        Validation Captcha
-                                                    </label>
+                                                    <div
+                                                        id="cap-slot"
+                                                        data-cap-api-endpoint="__CAPTCHA_INSTANCE_URL__/__CAPTCHA_SITE_KEY__"
+                                                        data-cap-hidden-field-name="cap-token"
+                                                    ></div>
+                                                                                                        </p>
                                                 </div>
+
 
                                                 <div
                                                     class="button-box has-animation"

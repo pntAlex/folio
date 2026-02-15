@@ -12,6 +12,9 @@ services:
       NODE_ENV: ${NODE_ENV}
       UMAMI_SCRIPT_URL: ${UMAMI_SCRIPT_URL:-http://localhost:3001/script.js}
       UMAMI_WEBSITE_ID: ${UMAMI_WEBSITE_ID:-77cf6a85-6f14-474e-a783-a917526bb83c}
+      CAPTCHA_INSTANCE_URL: ${CAPTCHA_INSTANCE_URL}
+      CAPTCHA_SITE_KEY: ${CAPTCHA_SITE_KEY}
+      CAPTCHA_SECRET: ${CAPTCHA_SECRET}
     volumes:
       - .:/app
     restart: ${RESTART_POLICY:-always}

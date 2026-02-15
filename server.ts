@@ -1,4 +1,5 @@
 import { join, normalize, resolve } from "path";
+import { injectCaptchaConfig, resolveCaptchaConfig } from "./captcha";
 import { injectUmamiConfig, resolveUmamiConfig } from "./umami";
 
 const port = Number(Bun.env.PORT ?? 3000);
@@ -7,6 +8,7 @@ const fallbackDocument = Bun.env.FALLBACK_HTML ?? "index.html";
 const notFoundDocument = Bun.env.NOT_FOUND_HTML ?? "404.html";
 const runtimeEnv = (Bun.env.NODE_ENV ?? "production").toLowerCase();
 const umamiConfig = resolveUmamiConfig(Bun.env);
+const captchaConfig = resolveCaptchaConfig(Bun.env);
 const isDevelopment = runtimeEnv === "development" || runtimeEnv === "dev";
 
 type StaticFile = ReturnType<typeof Bun.file>;
@@ -16,6 +18,180 @@ const securityHeaders = (headers: Headers) => {
   headers.set("Referrer-Policy", "strict-origin-when-cross-origin");
   headers.set("X-Frame-Options", "DENY");
   headers.set("Permissions-Policy", "geolocation=()");
+};
+
+const jsonResponse = (payload: unknown, status = 200) => {
+  const headers = new Headers();
+  headers.set("Content-Type", "application/json; charset=utf-8");
+  headers.set("Cache-Control", "no-store");
+  headers.set("Vary", "Accept-Encoding");
+  securityHeaders(headers);
+
+  return new Response(JSON.stringify(payload), { status, headers });
+};
+
+const resolveClientIp = (request: Request) => {
+  const xForwardedFor = request.headers.get("x-forwarded-for");
+  if (xForwardedFor) {
+    return xForwardedFor.split(",")[0]?.trim() ?? "";
+  }
+
+  return request.headers.get("x-real-ip")?.trim() ?? "";
+};
+
+const verifyCaptchaToken = async (token: string, request: Request) => {
+  if (!captchaConfig.secret) {
+    return {
+      success: false,
+      status: 503,
+      message:
+        "Captcha non configuré côté serveur. Ajoute la variable CAPTCHA_SECRET.",
+      errorCodes: [] as string[],
+    };
+  }
+
+  if (!captchaConfig.enabled) {
+    return {
+      success: false,
+      status: 503,
+      message:
+        "Captcha non configuré côté serveur. Ajoute CAPTCHA_INSTANCE_URL et CAPTCHA_SITE_KEY.",
+      errorCodes: [] as string[],
+    };
+  }
+
+  const body = new URLSearchParams({
+    secret: captchaConfig.secret,
+    response: token,
+  });
+
+  const clientIp = resolveClientIp(request);
+  if (clientIp) {
+    body.set("remoteip", clientIp);
+  }
+
+  const verifyUrl = `${captchaConfig.instanceUrl}/${encodeURIComponent(captchaConfig.siteKey)}/siteverify`;
+
+  let response: Response;
+  try {
+    response = await fetch(verifyUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: body.toString(),
+    });
+  } catch {
+    return {
+      success: false,
+      status: 502,
+      message:
+        "Impossible de joindre le service captcha. Réessaie dans quelques instants.",
+      errorCodes: [] as string[],
+    };
+  }
+
+  let payload: { success?: boolean; "error-codes"?: unknown; error?: unknown };
+  try {
+    payload = await response.json();
+  } catch {
+    if (!response.ok) {
+      return {
+        success: false,
+        status: 502,
+        message:
+          "Le service captcha a répondu avec une erreur temporaire. Réessaie plus tard.",
+        errorCodes: [] as string[],
+      };
+    }
+
+    return {
+      success: false,
+      status: 400,
+      message: "Le captcha est invalide.",
+      errorCodes: [] as string[],
+    };
+  }
+
+  if (!response.ok) {
+    if (response.status >= 400 && response.status < 500) {
+      return {
+        success: false,
+        status: 400,
+        message: "Le captcha est invalide ou expiré.",
+        errorCodes: [] as string[],
+      };
+    }
+
+    return {
+      success: false,
+      status: 502,
+      message:
+        "Le service captcha a répondu avec une erreur temporaire. Réessaie plus tard.",
+      errorCodes: [] as string[],
+    };
+  }
+
+  if (payload.success === true) {
+    return { success: true, status: 200, message: "ok", errorCodes: [] as string[] };
+  }
+
+  const errorCodes = Array.isArray(payload["error-codes"])
+    ? payload["error-codes"].filter(
+        (value): value is string => typeof value === "string",
+      )
+    : [];
+
+  return {
+    success: false,
+    status: 400,
+    message: "Le captcha est invalide ou expiré.",
+    errorCodes,
+  };
+};
+
+const handleCaptchaVerification = async (request: Request) => {
+  if (request.method !== "POST") {
+    return jsonResponse(
+      { success: false, message: "Méthode non autorisée." },
+      405,
+    );
+  }
+
+  let payload: unknown;
+  try {
+    payload = await request.json();
+  } catch {
+    return jsonResponse(
+      { success: false, message: "Payload JSON invalide." },
+      400,
+    );
+  }
+
+  const token =
+    typeof (payload as { token?: unknown })?.token === "string"
+      ? (payload as { token: string }).token.trim()
+      : "";
+
+  if (!token) {
+    return jsonResponse(
+      { success: false, message: "Token captcha manquant." },
+      400,
+    );
+  }
+
+  const result = await verifyCaptchaToken(token, request);
+
+  if (result.success) {
+    return jsonResponse({ success: true }, 200);
+  }
+
+  return jsonResponse(
+    {
+      success: false,
+      message: result.message,
+      errorCodes: result.errorCodes,
+    },
+    result.status,
+  );
 };
 
 const longCacheExtensions = new Set([
@@ -147,7 +323,8 @@ const buildFileResponse = async (
   }
 
   const html = await file.text();
-  const hydratedHtml = injectUmamiConfig(html, umamiConfig);
+  const htmlWithUmami = injectUmamiConfig(html, umamiConfig);
+  const hydratedHtml = injectCaptchaConfig(htmlWithUmami, captchaConfig);
 
   return new Response(hydratedHtml, { headers });
 };
@@ -219,6 +396,11 @@ const serveStatic = async (request: Request) => {
 Bun.serve({
   port,
   async fetch(request) {
+    const pathname = new URL(request.url).pathname.replace(/\/+$/, "");
+    if (pathname === "/api/captcha/verify") {
+      return handleCaptchaVerification(request);
+    }
+
     return serveStatic(request);
   },
 });

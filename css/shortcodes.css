@@ -1932,6 +1932,18 @@ dt.accordion-active .acc-button-icon i {
   margin-bottom: 60px;
 }
 
+.verify-box cap-widget {
+  float: left;
+}
+
+#cap-slot {
+  float: left;
+}
+
+#contact-formular .verify-box .required {
+  line-height: 58px;
+}
+
 .text-align-center .verify-box {
   float: none;
   width: auto;
